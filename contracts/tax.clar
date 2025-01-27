@@ -7,13 +7,21 @@
 ;; Data Variables
 (define-data-var tax-rate uint u100) ;; 10% represented as 100 (for precision)
 (define-data-var treasury-balance uint u0)
-(define-data-var government-address principal tx-sender)
+(define-data-var government-address principal 'ST1PQHQKV0RJXZFY1DGX8MNSNYVE3VGZJSRTPGZGM) ;; Set to wallet_1
 
 ;; Data Maps
 (define-map tax-payments principal uint)
 (define-map fund-allocations { department: (string-ascii 64) } uint)
 
 ;; Public Functions
+(define-public (set-government-address (new-address principal))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (var-set government-address new-address)
+        (ok true)
+    )
+)
+
 (define-public (pay-tax)
     (let (
         (payment-amount (/ (* (stx-get-balance tx-sender) (var-get tax-rate)) u1000))
@@ -34,7 +42,7 @@
         (asserts! (<= amount (var-get treasury-balance)) ERR_INVALID_AMOUNT)
         (map-set fund-allocations {department: department} amount)
         (var-set treasury-balance (- (var-get treasury-balance) amount))
-        (ok amount)
+        (ok true)
     )
 )
 
