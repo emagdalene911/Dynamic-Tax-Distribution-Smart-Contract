@@ -1,21 +1,43 @@
-
 import { describe, expect, it } from "vitest";
+import { Cl } from "@stacks/transactions";
 
 const accounts = simnet.getAccounts();
-const address1 = accounts.get("wallet_1")!;
+const government = accounts.get("wallet_1")!;
+const taxpayer = accounts.get("wallet_2")!;
 
-/*
-  The test below is an example. To learn more, read the testing documentation here:
-  https://docs.hiro.so/stacks/clarinet-js-sdk
-*/
+describe("tax contract", () => {
+    it("allows taxpayers to pay tax", () => {
+        const payTaxCall = simnet.callPublicFn("tax", "pay-tax", [], taxpayer);
+        expect(payTaxCall.result).toBeOk(Cl.bool(true));
+    });
 
-describe("example tests", () => {
-  it("ensures simnet is well initalised", () => {
-    expect(simnet.blockHeight).toBeDefined();
-  });
+    it("allows government to allocate funds", () => {
+        const department = "EDUCATION";
+        const amount = 1000;
+        
+        const allocateCall = simnet.callPublicFn(
+            "tax", 
+            "allocate-funds",
+            [Cl.stringAscii(department), Cl.uint(amount)],
+            government
+        );
+        expect(allocateCall.result).toBeOk(Cl.bool(true));
 
-  // it("shows an example", () => {
-  //   const { result } = simnet.callReadOnlyFn("counter", "get-counter", [], address1);
-  //   expect(result).toBeUint(0);
-  // });
+        const getAllocationCall = simnet.callReadOnlyFn(
+            "tax",
+            "get-department-allocation",
+            [Cl.stringAscii(department)],
+            government
+        );
+        expect(getAllocationCall.result).toBeOk(Cl.uint(amount));
+    });
+    it("tracks treasury balance", () => {
+        const balanceCall = simnet.callReadOnlyFn(
+            "tax",
+            "get-treasury-balance",
+            [],
+            government
+        );
+        expect(balanceCall.result).toBeDefined();
+    });
 });
