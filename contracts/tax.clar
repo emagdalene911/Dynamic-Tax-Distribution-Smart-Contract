@@ -23,7 +23,7 @@
             (try! (stx-transfer? payment-amount tx-sender (var-get government-address)))
             (map-set tax-payments tx-sender payment-amount)
             (var-set treasury-balance (+ (var-get treasury-balance) payment-amount))
-            (ok payment-amount))
+            (ok true))
         ERR_INVALID_AMOUNT)
     )
 )
