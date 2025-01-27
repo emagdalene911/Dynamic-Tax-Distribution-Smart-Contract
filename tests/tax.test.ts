@@ -6,10 +6,12 @@ const government = accounts.get("wallet_1")!;
 const taxpayer = accounts.get("wallet_2")!;
 
 describe("tax contract", () => {
-    it("allows taxpayers to pay tax", () => {
-        const payTaxCall = simnet.callPublicFn("tax", "pay-tax", [], taxpayer);
-        expect(payTaxCall.result).toBeOk(Cl.bool(true));
-    });
+  it("allows taxpayers to pay tax", () => {
+    const payTaxCall = simnet.callPublicFn("tax", "pay-tax", [], taxpayer);
+    // Verify the call succeeded and returned a uint value
+    expect(payTaxCall.result).toBeOk(Cl.bool(true));
+});
+
 
     it("allows government to allocate funds", () => {
         const department = "EDUCATION";
