@@ -141,3 +141,16 @@
         (ok true)
     )
 )
+
+
+
+;; Add Public Function
+(define-public (process-tax-refund (recipient principal) (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= amount (var-get treasury-balance)) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? amount (var-get government-address) recipient))
+        (var-set treasury-balance (- (var-get treasury-balance) amount))
+        (ok true)
+    )
+)
