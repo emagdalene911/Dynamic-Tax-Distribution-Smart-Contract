@@ -154,3 +154,24 @@
         (ok true)
     )
 )
+
+
+
+
+;; Add Data Maps
+(define-map department-metrics 
+    { department: (string-ascii 64) }
+    { spent: uint, projects-completed: uint }
+)
+
+;; Add Public Function
+(define-public (update-department-metrics (department (string-ascii 64)) (spent uint) (completed uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set department-metrics 
+            {department: department}
+            {spent: spent, projects-completed: completed}
+        )
+        (ok true)
+    )
+)
