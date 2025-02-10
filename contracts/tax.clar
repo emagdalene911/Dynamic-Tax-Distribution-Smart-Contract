@@ -58,3 +58,22 @@
 (define-read-only (get-treasury-balance)
     (var-get treasury-balance)
 )
+
+
+
+;; Add to Data Maps
+(define-map tax-exempt-status principal bool)
+
+;; Add Public Function
+(define-public (set-tax-exempt-status (address principal) (status bool))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set tax-exempt-status address status)
+        (ok true)
+    )
+)
+
+;; Add Read Function
+(define-read-only (is-tax-exempt (address principal))
+    (default-to false (map-get? tax-exempt-status address))
+)
