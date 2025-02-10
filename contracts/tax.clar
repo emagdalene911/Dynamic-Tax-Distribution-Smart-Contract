@@ -13,6 +13,16 @@
 (define-map tax-payments principal uint)
 (define-map fund-allocations { department: (string-ascii 64) } uint)
 
+
+;; Add Data Maps
+(define-map payment-history 
+    { payer: principal, payment-id: uint } 
+    { amount: uint, timestamp: uint }
+)
+(define-data-var payment-counter uint u0)
+
+
+
 ;; Public Functions
 (define-public (set-government-address (new-address principal))
     (begin
@@ -30,6 +40,11 @@
         (begin
             (try! (stx-transfer? payment-amount tx-sender (var-get government-address)))
             (map-set tax-payments tx-sender payment-amount)
+            (map-set payment-history 
+                {payer: tx-sender, payment-id: (var-get payment-counter)}
+                {amount: payment-amount, timestamp: stacks-block-height}
+            )
+            (var-set payment-counter (+ (var-get payment-counter) u1))
             (var-set treasury-balance (+ (var-get treasury-balance) payment-amount))
             (ok true))
         ERR_INVALID_AMOUNT)
@@ -92,6 +107,20 @@
     (begin
         (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
         (map-set tax-brackets {threshold: threshold} {rate: rate})
+        (ok true)
+    )
+)
+
+
+
+;; Add Data Maps
+(define-map department-budget-limits (string-ascii 64) uint)
+
+;; Add Public Function
+(define-public (set-department-budget (department (string-ascii 64)) (limit uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set department-budget-limits department limit)
         (ok true)
     )
 )
