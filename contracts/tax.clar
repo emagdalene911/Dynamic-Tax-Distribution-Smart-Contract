@@ -77,3 +77,21 @@
 (define-read-only (is-tax-exempt (address principal))
     (default-to false (map-get? tax-exempt-status address))
 )
+
+
+
+
+;; Add Data Maps
+(define-map tax-brackets 
+    { threshold: uint }
+    { rate: uint }
+)
+
+;; Add Public Function
+(define-public (set-tax-bracket (threshold uint) (rate uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set tax-brackets {threshold: threshold} {rate: rate})
+        (ok true)
+    )
+)
