@@ -124,3 +124,20 @@
         (ok true)
     )
 )
+
+
+
+;; Add Data Variables
+(define-data-var emergency-fund uint u0)
+(define-data-var emergency-fund-threshold uint u1000)
+
+;; Add Public Function
+(define-public (allocate-to-emergency-fund (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= amount (var-get treasury-balance)) ERR_INVALID_AMOUNT)
+        (var-set emergency-fund (+ (var-get emergency-fund) amount))
+        (var-set treasury-balance (- (var-get treasury-balance) amount))
+        (ok true)
+    )
+)
