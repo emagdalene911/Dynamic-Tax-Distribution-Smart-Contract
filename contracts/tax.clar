@@ -175,3 +175,171 @@
         (ok true)
     )
 )
+
+
+;; Add Data Variables
+(define-data-var penalty-rate uint u50) ;; 5% penalty rate (50/1000)
+(define-data-var grace-period uint u144) ;; blocks before penalty (roughly 24 hours)
+
+;; Add Data Maps
+(define-map payment-due-dates principal uint)
+
+;; Add Public Function
+(define-public (assess-late-penalty (taxpayer principal))
+    (let (
+        (due-date (default-to u0 (map-get? payment-due-dates taxpayer)))
+        (current-height stacks-block-height)
+        (tax-amount (get-tax-payment taxpayer))
+        (penalty-amount (/ (* tax-amount (var-get penalty-rate)) u1000))
+    )
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (> current-height (+ due-date (var-get grace-period))) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? penalty-amount taxpayer (var-get government-address)))
+        (ok true)))
+)
+
+
+;; Add Data Maps
+(define-map tax-incentives 
+    { category: (string-ascii 64) }
+    { discount-rate: uint, active: bool }
+)
+
+;; Add Public Function
+(define-public (create-tax-incentive (category (string-ascii 64)) (discount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set tax-incentives 
+            {category: category}
+            {discount-rate: discount, active: true}
+        )
+        (ok true))
+)
+
+
+;; Add Data Maps
+(define-map budget-proposals 
+    { id: uint }
+    { department: (string-ascii 64), amount: uint, approved: bool }
+)
+(define-data-var proposal-counter uint u0)
+
+;; Add Public Function
+(define-public (submit-budget-proposal (department (string-ascii 64)) (amount uint))
+    (begin
+        (map-set budget-proposals
+            {id: (var-get proposal-counter)}
+            {department: department, amount: amount, approved: false}
+        )
+        (var-set proposal-counter (+ (var-get proposal-counter) u1))
+        (ok true))
+)
+
+
+
+;; Add Data Maps
+(define-map spending-categories 
+    { category: (string-ascii 64) }
+    { total-spent: uint, last-updated: uint }
+)
+
+;; Add Public Function
+(define-public (record-spending (category (string-ascii 64)) (amount uint))
+    (let (
+        (current-total (default-to u0 (get total-spent (map-get? spending-categories {category: category}))))
+    )
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set spending-categories
+            {category: category}
+            {total-spent: (+ current-total amount), last-updated: stacks-block-height}
+        )
+        (ok true)))
+)
+
+(define-read-only (get-category-spent (category (string-ascii 64)))
+    (get total-spent (map-get? spending-categories {category: category}))
+)
+
+
+;; Add Data Maps
+(define-map revenue-forecasts
+    { period: uint }
+    { projected: uint, actual: uint }
+)
+
+;; Add Public Function
+(define-public (set-revenue-forecast (period uint) (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set revenue-forecasts
+            {period: period}
+            {projected: amount, actual: u0}
+        )
+        (ok true))
+)
+
+
+
+;; Add Data Maps
+(define-map taxpayer-ratings
+    principal
+    { rating: uint, last-payment: uint }
+)
+
+;; Add Public Function
+(define-public (update-taxpayer-rating (taxpayer principal) (new-rating uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= new-rating u100) ERR_INVALID_AMOUNT)
+        (map-set taxpayer-ratings
+            taxpayer
+            {rating: new-rating, last-payment: stacks-block-height}
+        )
+        (ok true))
+)
+
+
+
+
+
+;; Add Data Maps
+(define-map department-performance
+    { department: (string-ascii 64) }
+    { efficiency-score: uint, budget-utilization: uint }
+)
+
+;; Add Public Function
+(define-public (update-department-performance (department (string-ascii 64)) (efficiency uint) (utilization uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set department-performance
+            {department: department}
+            {efficiency-score: efficiency, budget-utilization: utilization}
+        )
+        (ok true))
+)
+
+
+;; Add Data Maps
+(define-map emergency-allocations
+    { id: uint }
+    { recipient: principal, amount: uint, purpose: (string-ascii 64) }
+)
+(define-data-var emergency-counter uint u0)
+
+;; Add Public Function
+(define-public (distribute-emergency-funds (recipient principal) (amount uint) (purpose (string-ascii 64)))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= amount (var-get emergency-fund)) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? amount (var-get government-address) recipient))
+        (map-set emergency-allocations
+            {id: (var-get emergency-counter)}
+            {recipient: recipient, amount: amount, purpose: purpose}
+        )
+        (var-set emergency-counter (+ (var-get emergency-counter) u1))
+        (var-set emergency-fund (- (var-get emergency-fund) amount))
+        (ok true))
+)
