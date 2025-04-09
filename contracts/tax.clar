@@ -343,3 +343,95 @@
         (var-set emergency-fund (- (var-get emergency-fund) amount))
         (ok true))
 )
+
+
+
+(define-map installment-plans
+    principal
+    { total-amount: uint, remaining-amount: uint, installment-size: uint, next-due: uint }
+)
+
+(define-public (create-installment-plan (total-amount uint) (number-of-installments uint))
+    (let (
+        (installment-size (/ total-amount number-of-installments))
+        (next-payment-block (+ stacks-block-height u144))
+    )
+        (asserts! (> total-amount u0) ERR_INVALID_AMOUNT)
+        (asserts! (> number-of-installments u0) ERR_INVALID_AMOUNT)
+        (map-set installment-plans
+            tx-sender
+            { 
+                total-amount: total-amount,
+                remaining-amount: total-amount,
+                installment-size: installment-size,
+                next-due: next-payment-block
+            }
+        )
+        (ok true))
+)
+
+(define-public (pay-installment)
+    (let (
+        (plan (unwrap! (map-get? installment-plans tx-sender) ERR_UNAUTHORIZED))
+        (payment-amount (get installment-size plan))
+    )
+        (asserts! (> (get remaining-amount plan) u0) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? payment-amount tx-sender (var-get government-address)))
+        (map-set installment-plans
+            tx-sender
+            {
+                total-amount: (get total-amount plan),
+                remaining-amount: (- (get remaining-amount plan) payment-amount),
+                installment-size: payment-amount,
+                next-due: (+ (get next-due plan) u144)
+            }
+        )
+        (ok true))
+)
+
+
+
+(define-map deduction-types
+    (string-ascii 64)
+    { max-amount: uint, rate: uint }
+)
+
+(define-map taxpayer-deductions
+    { taxpayer: principal, deduction-type: (string-ascii 64) }
+    { amount: uint, approved: bool }
+)
+
+(define-public (register-deduction-type (name (string-ascii 64)) (max-amount uint) (rate uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set deduction-types
+            name
+            { max-amount: max-amount, rate: rate }
+        )
+        (ok true))
+)
+
+(define-public (claim-deduction (deduction-type (string-ascii 64)) (amount uint))
+    (let (
+        (deduction-info (unwrap! (map-get? deduction-types deduction-type) ERR_INVALID_AMOUNT))
+    )
+        (asserts! (<= amount (get max-amount deduction-info)) ERR_INVALID_AMOUNT)
+        (map-set taxpayer-deductions
+            { taxpayer: tx-sender, deduction-type: deduction-type }
+            { amount: amount, approved: false }
+        )
+        (ok true))
+)
+
+(define-public (approve-deduction (taxpayer principal) (deduction-type (string-ascii 64)))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set taxpayer-deductions
+            { taxpayer: taxpayer, deduction-type: deduction-type }
+            { 
+                amount: (get amount (unwrap! (map-get? taxpayer-deductions { taxpayer: taxpayer, deduction-type: deduction-type }) ERR_INVALID_AMOUNT)),
+                approved: true 
+            }
+        )
+        (ok true))
+)
