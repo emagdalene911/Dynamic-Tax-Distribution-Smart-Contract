@@ -435,3 +435,92 @@
         )
         (ok true))
 )
+
+
+(define-non-fungible-token tax-receipt uint)
+
+(define-map receipt-details 
+    uint 
+    {
+        payment-amount: uint,
+        payment-date: uint,
+        tax-year: uint,
+        category: (string-ascii 64)
+    }
+)
+
+(define-data-var receipt-counter uint u0)
+
+(define-public (mint-tax-receipt (payment-amount uint) (tax-year uint) (category (string-ascii 64)))
+    (let
+        (
+            (receipt-id (var-get receipt-counter))
+        )
+        (try! (nft-mint? tax-receipt receipt-id tx-sender))
+        (map-set receipt-details
+            receipt-id
+            {
+                payment-amount: payment-amount,
+                payment-date: stacks-block-height,
+                tax-year: tax-year,
+                category: category
+            }
+        )
+        (var-set receipt-counter (+ receipt-id u1))
+        (ok receipt-id))
+)
+
+(define-read-only (get-receipt-details (receipt-id uint))
+    (map-get? receipt-details receipt-id)
+)
+
+
+(define-map distribution-rules
+    (string-ascii 64)
+    {
+        percentage: uint,
+        priority: uint,
+        min-allocation: uint
+    }
+)
+
+(define-map distribution-totals
+    (string-ascii 64)
+    {
+        allocated: uint,
+        last-distribution: uint
+    }
+)
+
+(define-public (set-distribution-rule (department (string-ascii 64)) (percentage uint) (priority uint) (min-allocation uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= percentage u1000) ERR_INVALID_AMOUNT)
+        (map-set distribution-rules
+            department
+            {
+                percentage: percentage,
+                priority: priority,
+                min-allocation: min-allocation
+            }
+        )
+        (ok true))
+)
+
+(define-public (auto-distribute-tax (amount uint))
+    (let
+        (
+            (health-share (/ (* amount u300) u1000))
+            (education-share (/ (* amount u200) u1000))
+            (infrastructure-share (/ (* amount u200) u1000))
+            (emergency-share (/ (* amount u100) u1000))
+            (misc-share (/ (* amount u200) u1000))
+        )
+        (begin
+            (try! (allocate-funds "HEALTH" health-share))
+            (try! (allocate-funds "EDUCATION" education-share))
+            (try! (allocate-funds "INFRASTRUCTURE" infrastructure-share))
+            (try! (allocate-funds "EMERGENCY" emergency-share))
+            (try! (allocate-funds "MISCELLANEOUS" misc-share))
+            (ok true)))
+)
