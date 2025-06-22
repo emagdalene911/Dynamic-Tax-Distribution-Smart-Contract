@@ -524,3 +524,183 @@
             (try! (allocate-funds "MISCELLANEOUS" misc-share))
             (ok true)))
 )
+
+
+(define-map audit-events
+    uint
+    {
+        event-type: (string-ascii 32),
+        actor: principal,
+        target: (optional principal),
+        amount: uint,
+        description: (string-ascii 128),
+        timestamp: uint,
+        block-height: uint,
+        transaction-hash: (buff 32)
+    }
+)
+
+(define-data-var audit-counter uint u0)
+
+(define-map audit-categories
+    (string-ascii 32)
+    {
+        total-events: uint,
+        total-amount: uint,
+        last-event: uint
+    }
+)
+
+(define-map actor-audit-summary
+    principal
+    {
+        total-events: uint,
+        total-paid: uint,
+        total-received: uint,
+        last-activity: uint
+    }
+)
+
+(define-private (log-audit-event (event-type (string-ascii 32)) (target (optional principal)) (amount uint) (description (string-ascii 128)))
+    (let
+        (
+            (event-id (var-get audit-counter))
+            (current-category (default-to {total-events: u0, total-amount: u0, last-event: u0} (map-get? audit-categories event-type)))
+            (current-actor-summary (default-to {total-events: u0, total-paid: u0, total-received: u0, last-activity: u0} (map-get? actor-audit-summary tx-sender)))
+        )
+        (map-set audit-events
+            event-id
+            {
+                event-type: event-type,
+                actor: tx-sender,
+                target: target,
+                amount: amount,
+                description: description,
+                timestamp: stacks-block-height,
+                block-height: stacks-block-height,
+                transaction-hash: (unwrap-panic (get-stacks-block-info? header-hash stacks-block-height))
+            }
+        )
+        (map-set audit-categories
+            event-type
+            {
+                total-events: (+ (get total-events current-category) u1),
+                total-amount: (+ (get total-amount current-category) amount),
+                last-event: event-id
+            }
+        )
+        (map-set actor-audit-summary
+            tx-sender
+            {
+                total-events: (+ (get total-events current-actor-summary) u1),
+                total-paid: (if (is-eq event-type "TAX_PAYMENT") (+ (get total-paid current-actor-summary) amount) (get total-paid current-actor-summary)),
+                total-received: (if (is-eq event-type "REFUND") (+ (get total-received current-actor-summary) amount) (get total-received current-actor-summary)),
+                last-activity: stacks-block-height
+            }
+        )
+        (var-set audit-counter (+ event-id u1))
+        (ok event-id))
+)
+
+(define-public (pay-tax-with-audit)
+    (let
+        (
+            (payment-amount (/ (* (stx-get-balance tx-sender) (var-get tax-rate)) u1000))
+        )
+        (if (> payment-amount u0)
+            (begin
+                (try! (stx-transfer? payment-amount tx-sender (var-get government-address)))
+                (map-set tax-payments tx-sender payment-amount)
+                (map-set payment-history 
+                    {payer: tx-sender, payment-id: (var-get payment-counter)}
+                    {amount: payment-amount, timestamp: stacks-block-height}
+                )
+                (var-set payment-counter (+ (var-get payment-counter) u1))
+                (var-set treasury-balance (+ (var-get treasury-balance) payment-amount))
+                (unwrap! (log-audit-event "TAX_PAYMENT" (some (var-get government-address)) payment-amount "Regular tax payment") (err u102))
+                (ok true))
+            ERR_INVALID_AMOUNT))
+)
+
+(define-public (allocate-funds-with-audit (department (string-ascii 64)) (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= amount (var-get treasury-balance)) ERR_INVALID_AMOUNT)
+        (map-set fund-allocations {department: department} amount)
+        (var-set treasury-balance (- (var-get treasury-balance) amount))
+        (unwrap! (log-audit-event "FUND_ALLOCATION" none amount (concat "Funds allocated to department: " department)) (err u102))
+        (ok true))
+)
+
+(define-public (process-tax-refund-with-audit (recipient principal) (amount uint))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= amount (var-get treasury-balance)) ERR_INVALID_AMOUNT)
+        (try! (stx-transfer? amount (var-get government-address) recipient))
+        (var-set treasury-balance (- (var-get treasury-balance) amount))
+        (unwrap! (log-audit-event "REFUND" (some recipient) amount "Tax refund processed") (err u102))
+        (ok true))
+)
+
+(define-read-only (get-audit-event (event-id uint))
+    (map-get? audit-events event-id)
+)
+
+(define-read-only (get-audit-category-summary (category (string-ascii 32)))
+    (map-get? audit-categories category)
+)
+
+(define-read-only (get-actor-audit-summary (actor principal))
+    (map-get? actor-audit-summary actor)
+)
+
+(define-read-only (get-total-audit-events)
+    (var-get audit-counter)
+)
+
+(define-public (generate-audit-report (start-block uint) (end-block uint))
+    (let
+        (
+            (current-block stacks-block-height)
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= start-block end-block) ERR_INVALID_AMOUNT)
+        (asserts! (<= end-block current-block) ERR_INVALID_AMOUNT)
+        (unwrap! (log-audit-event "AUDIT_REPORT" none u0 "Audit report generated") (err u102))
+        (ok {start-block: start-block, end-block: end-block, generated-at: current-block}))
+)
+
+(define-read-only (verify-transaction-integrity (event-id uint))
+    (let
+        (
+            (event-data (unwrap! (map-get? audit-events event-id) (err u404)))
+        )
+        (ok {
+            event-id: event-id,
+            verified: true,
+            block-height: (get block-height event-data),
+            transaction-hash: (get transaction-hash event-data)
+        }))
+)
+
+(define-public (flag-suspicious-activity (target-principal principal) (reason (string-ascii 128)))
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (unwrap! (log-audit-event "SUSPICIOUS_ACTIVITY" (some target-principal) u0 reason) (err u102))
+        (ok true))
+)
+
+(define-read-only (get-compliance-status (actor principal))
+    (let
+        (
+            (actor-summary (default-to {total-events: u0, total-paid: u0, total-received: u0, last-activity: u0} (map-get? actor-audit-summary actor)))
+            (days-since-activity (- stacks-block-height (get last-activity actor-summary)))
+        )
+        (ok {
+            total-transactions: (get total-events actor-summary),
+            total-paid: (get total-paid actor-summary),
+            total-received: (get total-received actor-summary),
+            days-inactive: days-since-activity,
+            compliance-score: (if (> (get total-paid actor-summary) u0) u100 u0)
+        }))
+)
