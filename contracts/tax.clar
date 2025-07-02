@@ -704,3 +704,293 @@
             compliance-score: (if (> (get total-paid actor-summary) u0) u100 u0)
         }))
 )
+
+
+;; Tax Liability Prediction Engine
+
+;; Constants for prediction algorithms
+(define-constant ERR_INSUFFICIENT_DATA (err u103))
+(define-constant ERR_PREDICTION_FAILED (err u104))
+(define-constant MAX_PREDICTION_PERIODS u12)
+
+;; Data Maps for prediction engine
+(define-map balance-snapshots
+    { taxpayer: principal, period: uint }
+    { balance: uint, block-height: uint, trend-indicator: uint }
+)
+
+(define-map spending-patterns
+    principal
+    { 
+        avg-monthly-spend: uint,
+        volatility-score: uint,
+        last-updated: uint,
+        prediction-confidence: uint
+    }
+)
+
+(define-map tax-predictions
+    { taxpayer: principal, future-period: uint }
+    {
+        predicted-liability: uint,
+        confidence-score: uint,
+        calculated-at: uint,
+        factors-used: uint
+    }
+)
+
+(define-map taxpayer-risk-profiles
+    principal
+    {
+        risk-score: uint,
+        payment-reliability: uint,
+        balance-stability: uint,
+        prediction-accuracy: uint
+    }
+)
+
+(define-map government-forecasts
+    uint
+    {
+        period: uint,
+        total-predicted-revenue: uint,
+        confidence-level: uint,
+        taxpayer-count: uint,
+        created-at: uint
+    }
+)
+
+;; Data Variables
+(define-data-var snapshot-counter uint u0)
+(define-data-var forecast-counter uint u0)
+(define-data-var prediction-accuracy-threshold uint u80)
+
+;; Helper function for minimum of two uints
+(define-private (min (a uint) (b uint))
+    (if (< a b) a b)
+)
+
+;; Core prediction functions
+(define-public (record-balance-snapshot (taxpayer principal))
+    (let
+        (
+            (current-balance (stx-get-balance taxpayer))
+            (period-id (/ stacks-block-height u144))
+            (snapshot-id (var-get snapshot-counter))
+            (prev-snapshot (map-get? balance-snapshots { taxpayer: taxpayer, period: (- period-id u1) }))
+            (trend (if (is-some prev-snapshot)
+                      (if (> current-balance (get balance (unwrap-panic prev-snapshot))) u1 u0)
+                      u1))
+        )
+        (map-set balance-snapshots
+            { taxpayer: taxpayer, period: period-id }
+            { 
+                balance: current-balance,
+                block-height: stacks-block-height,
+                trend-indicator: trend
+            }
+        )
+        (var-set snapshot-counter (+ snapshot-id u1))
+        (ok snapshot-id))
+)
+
+(define-private (calculate-spending-volatility (taxpayer principal))
+    (let
+        (
+            (current-period (/ stacks-block-height u144))
+            (period-1 (map-get? balance-snapshots { taxpayer: taxpayer, period: (- current-period u1) }))
+            (period-2 (map-get? balance-snapshots { taxpayer: taxpayer, period: (- current-period u2) }))
+            (period-3 (map-get? balance-snapshots { taxpayer: taxpayer, period: (- current-period u3) }))
+        )
+        (if (and (is-some period-1) (is-some period-2) (is-some period-3))
+            (let
+                (
+                    (balance-1 (get balance (unwrap-panic period-1)))
+                    (balance-2 (get balance (unwrap-panic period-2)))
+                    (balance-3 (get balance (unwrap-panic period-3)))
+                    (change-1 (if (> balance-1 balance-2) (- balance-1 balance-2) (- balance-2 balance-1)))
+                    (change-2 (if (> balance-2 balance-3) (- balance-2 balance-3) (- balance-3 balance-2)))
+                    (avg-change (/ (+ change-1 change-2) u2))
+                    (volatility (if (> avg-change u1000) (/ avg-change u100) u10))
+                )
+                (ok (min volatility u100)))
+            (ok u50)))
+)
+
+(define-public (update-spending-pattern (taxpayer principal))
+    (let
+        (
+            (current-period (/ stacks-block-height u144))
+            (volatility-result (unwrap! (calculate-spending-volatility taxpayer) ERR_PREDICTION_FAILED))
+            (current-balance (stx-get-balance taxpayer))
+            (avg-spend (/ current-balance u30))
+            (confidence (if (> volatility-result u70) u40 u80))
+        )
+        (map-set spending-patterns
+            taxpayer
+            {
+                avg-monthly-spend: avg-spend,
+                volatility-score: volatility-result,
+                last-updated: stacks-block-height,
+                prediction-confidence: confidence
+            }
+        )
+        (ok true))
+)
+
+(define-public (generate-tax-prediction (taxpayer principal) (periods-ahead uint))
+    (let
+        (
+            (pattern (unwrap! (map-get? spending-patterns taxpayer) ERR_INSUFFICIENT_DATA))
+            (current-balance (stx-get-balance taxpayer))
+            (tax-rate-value (var-get tax-rate))
+            (volatility (get volatility-score pattern))
+            (base-prediction (/ (* current-balance tax-rate-value) u1000))
+            (volatility-adjustment (/ (* base-prediction volatility) u100))
+            (adjusted-prediction (+ base-prediction volatility-adjustment))
+            (time-factor (+ u100 (* periods-ahead u5)))
+            (final-prediction (/ (* adjusted-prediction time-factor) u100))
+            (confidence (if (< volatility u30) u90 (if (< volatility u70) u70 u40)))
+        )
+        (asserts! (<= periods-ahead MAX_PREDICTION_PERIODS) ERR_INVALID_AMOUNT)
+        (map-set tax-predictions
+            { taxpayer: taxpayer, future-period: periods-ahead }
+            {
+                predicted-liability: final-prediction,
+                confidence-score: confidence,
+                calculated-at: stacks-block-height,
+                factors-used: u4
+            }
+        )
+        (ok final-prediction))
+)
+
+(define-public (assess-taxpayer-risk (taxpayer principal))
+    (let
+        (
+            (taxpayer-payment (get-tax-payment taxpayer))
+            (pattern (map-get? spending-patterns taxpayer))
+            (current-balance (stx-get-balance taxpayer))
+            (base-risk (if (> taxpayer-payment u0) u20 u80))
+            (balance-risk (if (> current-balance u10000) u10 u40))
+            (volatility-risk (if (is-some pattern) 
+                              (get volatility-score (unwrap-panic pattern)) 
+                              u60))
+            (total-risk (/ (+ base-risk balance-risk volatility-risk) u3))
+            (reliability (if (> taxpayer-payment u0) u90 u30))
+            (stability (if (< volatility-risk u30) u90 u50))
+        )
+        (map-set taxpayer-risk-profiles
+            taxpayer
+            {
+                risk-score: total-risk,
+                payment-reliability: reliability,
+                balance-stability: stability,
+                prediction-accuracy: u75
+            }
+        )
+        (ok total-risk))
+)
+
+(define-public (create-government-forecast (period uint) (taxpayer-list (list 20 principal)))
+    (let
+        (
+            (forecast-id (var-get forecast-counter))
+            (total-predicted (fold calculate-taxpayer-contribution taxpayer-list u0))
+            (taxpayer-count (len taxpayer-list))
+            (confidence (if (> taxpayer-count u10) u85 u60))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set government-forecasts
+            forecast-id
+            {
+                period: period,
+                total-predicted-revenue: total-predicted,
+                confidence-level: confidence,
+                taxpayer-count: taxpayer-count,
+                created-at: stacks-block-height
+            }
+        )
+        (var-set forecast-counter (+ forecast-id u1))
+        (ok total-predicted))
+)
+
+(define-private (calculate-taxpayer-contribution (taxpayer principal) (accumulator uint))
+    (let
+        (
+            (balance (stx-get-balance taxpayer))
+            (tax-liability (/ (* balance (var-get tax-rate)) u1000))
+        )
+        (+ accumulator tax-liability))
+)
+
+(define-public (validate-prediction-accuracy (taxpayer principal) (period uint) (actual-payment uint))
+    (let
+        (
+            (prediction (unwrap! (map-get? tax-predictions { taxpayer: taxpayer, future-period: period }) ERR_INSUFFICIENT_DATA))
+            (predicted-amount (get predicted-liability prediction))
+            (accuracy-percentage (if (> predicted-amount actual-payment)
+                                   (/ (* actual-payment u100) predicted-amount)
+                                   (/ (* predicted-amount u100) actual-payment)))
+            (current-profile (default-to 
+                              { risk-score: u50, payment-reliability: u50, balance-stability: u50, prediction-accuracy: u50 }
+                              (map-get? taxpayer-risk-profiles taxpayer)))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set taxpayer-risk-profiles
+            taxpayer
+            {
+                risk-score: (get risk-score current-profile),
+                payment-reliability: (get payment-reliability current-profile),
+                balance-stability: (get balance-stability current-profile),
+                prediction-accuracy: accuracy-percentage
+            }
+        )
+        (ok accuracy-percentage))
+)
+
+;; Read-only functions
+(define-read-only (get-tax-prediction (taxpayer principal) (period uint))
+    (map-get? tax-predictions { taxpayer: taxpayer, future-period: period })
+)
+
+(define-read-only (get-taxpayer-risk-profile (taxpayer principal))
+    (map-get? taxpayer-risk-profiles taxpayer)
+)
+
+(define-read-only (get-spending-pattern (taxpayer principal))
+    (map-get? spending-patterns taxpayer)
+)
+
+(define-read-only (get-government-forecast (forecast-id uint))
+    (map-get? government-forecasts forecast-id)
+)
+
+(define-read-only (get-balance-snapshot (taxpayer principal) (period uint))
+    (map-get? balance-snapshots { taxpayer: taxpayer, period: period })
+)
+
+(define-read-only (calculate-recommended-savings (taxpayer principal) (target-period uint))
+    (let
+        (
+            (prediction (map-get? tax-predictions { taxpayer: taxpayer, future-period: target-period }))
+            (current-balance (stx-get-balance taxpayer))
+        )
+        (if (is-some prediction)
+            (let
+                (
+                    (predicted-liability (get predicted-liability (unwrap-panic prediction)))
+                    (recommended-savings (/ predicted-liability u12))
+                )
+                (ok { monthly-savings: recommended-savings, total-needed: predicted-liability }))
+            ERR_INSUFFICIENT_DATA))
+)
+
+(define-read-only (get-prediction-metrics)
+    (ok {
+        total-snapshots: (var-get snapshot-counter),
+        total-forecasts: (var-get forecast-counter),
+        accuracy-threshold: (var-get prediction-accuracy-threshold),
+        max-prediction-periods: MAX_PREDICTION_PERIODS
+    })
+)
