@@ -994,3 +994,409 @@
         max-prediction-periods: MAX_PREDICTION_PERIODS
     })
 )
+
+
+;; Tax Compliance Rewards System
+
+;; Constants for rewards system
+(define-constant ERR_INSUFFICIENT_POINTS (err u200))
+(define-constant ERR_INVALID_REWARD (err u201))
+(define-constant ERR_TRANSFER_FAILED (err u202))
+(define-constant ERR_REWARD_EXPIRED (err u203))
+
+;; Reward multipliers and base values
+(define-constant EARLY_PAYMENT_MULTIPLIER u150) ;; 1.5x points for early payment
+(define-constant ON_TIME_BASE_POINTS u100)
+(define-constant LATE_PAYMENT_PENALTY u50) ;; 50% points reduction
+(define-constant CONSISTENCY_BONUS u200) ;; Bonus for 5+ consecutive on-time payments
+(define-constant REFERRAL_BONUS u300) ;; Points for successful referrals
+
+;; Data Maps for rewards system
+(define-map taxpayer-points
+    principal
+    {
+        total-points: uint,
+        lifetime-earned: uint,
+        current-streak: uint,
+        last-earning-block: uint,
+        tier-level: uint
+    }
+)
+
+(define-map reward-tiers
+    uint
+    {
+        name: (string-ascii 32),
+        points-required: uint,
+        discount-percentage: uint,
+        special-benefits: (string-ascii 128),
+        active: bool
+    }
+)
+
+(define-map available-rewards
+    uint
+    {
+        name: (string-ascii 64),
+        description: (string-ascii 256),
+        cost-in-points: uint,
+        discount-percentage: uint,
+        max-uses: uint,
+        current-uses: uint,
+        expiry-block: uint,
+        reward-type: (string-ascii 32),
+        active: bool
+    }
+)
+
+(define-map user-reward-redemptions
+    { user: principal, reward-id: uint }
+    {
+        redeemed-at: uint,
+        discount-applied: uint,
+        expires-at: uint,
+        used: bool
+    }
+)
+
+(define-map point-transfers
+    uint
+    {
+        from: principal,
+        to: principal,
+        amount: uint,
+        transferred-at: uint,
+        reason: (string-ascii 128)
+    }
+)
+
+(define-map taxpayer-achievements
+    { user: principal, achievement-id: uint }
+    {
+        earned-at: uint,
+        points-awarded: uint,
+        achievement-name: (string-ascii 64)
+    }
+)
+
+(define-map seasonal-bonuses
+    uint
+    {
+        season-name: (string-ascii 32),
+        multiplier: uint,
+        start-block: uint,
+        end-block: uint,
+        active: bool
+    }
+)
+
+;; Data Variables for rewards system
+(define-data-var rewards-counter uint u0)
+(define-data-var transfer-counter uint u0)
+(define-data-var achievement-counter uint u0)
+(define-data-var season-counter uint u0)
+(define-data-var points-to-stx-rate uint u1000) ;; 1000 points = 1 STX discount
+
+;; Helper function to get current tier level
+(define-private (calculate-tier-level (total-points uint))
+    (if (>= total-points u50000) u5
+        (if (>= total-points u20000) u4
+            (if (>= total-points u10000) u3
+                (if (>= total-points u5000) u2
+                    (if (>= total-points u1000) u1 u0)))))
+)
+
+;; Initialize default reward tiers
+(define-public (initialize-reward-tiers)
+    (begin
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set reward-tiers u0 {name: "BRONZE", points-required: u1000, discount-percentage: u5, special-benefits: "Basic tax reminders", active: true})
+        (map-set reward-tiers u1 {name: "SILVER", points-required: u5000, discount-percentage: u10, special-benefits: "Priority support, quarterly reports", active: true})
+        (map-set reward-tiers u2 {name: "GOLD", points-required: u10000, discount-percentage: u15, special-benefits: "Personal tax advisor access", active: true})
+        (map-set reward-tiers u3 {name: "PLATINUM", points-required: u20000, discount-percentage: u20, special-benefits: "Custom payment plans, early access", active: true})
+        (map-set reward-tiers u4 {name: "DIAMOND", points-required: u50000, discount-percentage: u25, special-benefits: "VIP status, special recognition", active: true})
+        (ok true))
+)
+
+;; Award points for various tax compliance activities
+(define-public (award-points-for-payment (taxpayer principal) (payment-amount uint) (payment-timing (string-ascii 16)))
+    (let
+        (
+            (current-data (default-to {total-points: u0, lifetime-earned: u0, current-streak: u0, last-earning-block: u0, tier-level: u0} 
+                          (map-get? taxpayer-points taxpayer)))
+            (base-points (/ payment-amount u100)) ;; 1 point per 100 units paid
+            (timing-multiplier (if (is-eq payment-timing "EARLY") EARLY_PAYMENT_MULTIPLIER
+                               (if (is-eq payment-timing "ON_TIME") u100 LATE_PAYMENT_PENALTY)))
+            (points-earned (/ (* base-points timing-multiplier) u100))
+            (new-streak (if (is-eq payment-timing "LATE") u0 (+ (get current-streak current-data) u1)))
+            (streak-bonus (if (>= new-streak u5) CONSISTENCY_BONUS u0))
+            (total-points-earned (+ points-earned streak-bonus))
+            (new-total-points (+ (get total-points current-data) total-points-earned))
+            (new-tier (calculate-tier-level new-total-points))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set taxpayer-points
+            taxpayer
+            {
+                total-points: new-total-points,
+                lifetime-earned: (+ (get lifetime-earned current-data) total-points-earned),
+                current-streak: new-streak,
+                last-earning-block: stacks-block-height,
+                tier-level: new-tier
+            }
+        )
+        (ok total-points-earned))
+)
+
+;; Create new rewards that users can redeem
+(define-public (create-reward (name (string-ascii 64)) (description (string-ascii 256)) (cost uint) (discount uint) (max-uses uint) (duration-blocks uint) (reward-type (string-ascii 32)))
+    (let
+        (
+            (reward-id (var-get rewards-counter))
+            (expiry-block (+ stacks-block-height duration-blocks))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (asserts! (<= discount u100) ERR_INVALID_AMOUNT)
+        (map-set available-rewards
+            reward-id
+            {
+                name: name,
+                description: description,
+                cost-in-points: cost,
+                discount-percentage: discount,
+                max-uses: max-uses,
+                current-uses: u0,
+                expiry-block: expiry-block,
+                reward-type: reward-type,
+                active: true
+            }
+        )
+        (var-set rewards-counter (+ reward-id u1))
+        (ok reward-id))
+)
+
+;; Redeem points for rewards
+(define-public (redeem-reward (reward-id uint))
+    (let
+        (
+            (user-data (unwrap! (map-get? taxpayer-points tx-sender) ERR_INSUFFICIENT_POINTS))
+            (reward-data (unwrap! (map-get? available-rewards reward-id) ERR_INVALID_REWARD))
+            (cost (get cost-in-points reward-data))
+            (current-uses (get current-uses reward-data))
+            (max-uses (get max-uses reward-data))
+        )
+        (asserts! (get active reward-data) ERR_INVALID_REWARD)
+        (asserts! (< stacks-block-height (get expiry-block reward-data)) ERR_REWARD_EXPIRED)
+        (asserts! (>= (get total-points user-data) cost) ERR_INSUFFICIENT_POINTS)
+        (asserts! (< current-uses max-uses) ERR_INVALID_REWARD)
+        
+        ;; Update user points
+        (map-set taxpayer-points
+            tx-sender
+            {
+                total-points: (- (get total-points user-data) cost),
+                lifetime-earned: (get lifetime-earned user-data),
+                current-streak: (get current-streak user-data),
+                last-earning-block: (get last-earning-block user-data),
+                tier-level: (get tier-level user-data)
+            }
+        )
+        
+        ;; Update reward usage
+        (map-set available-rewards
+            reward-id
+            {
+                name: (get name reward-data),
+                description: (get description reward-data),
+                cost-in-points: cost,
+                discount-percentage: (get discount-percentage reward-data),
+                max-uses: max-uses,
+                current-uses: (+ current-uses u1),
+                expiry-block: (get expiry-block reward-data),
+                reward-type: (get reward-type reward-data),
+                active: (get active reward-data)
+            }
+        )
+        
+        ;; Record redemption
+        (map-set user-reward-redemptions
+            { user: tx-sender, reward-id: reward-id }
+            {
+                redeemed-at: stacks-block-height,
+                discount-applied: (get discount-percentage reward-data),
+                expires-at: (+ stacks-block-height u1440), ;; Valid for ~10 days
+                used: false
+            }
+        )
+        (ok true))
+)
+
+;; Transfer points between users
+(define-public (transfer-points (recipient principal) (amount uint) (reason (string-ascii 128)))
+    (let
+        (
+            (sender-data (unwrap! (map-get? taxpayer-points tx-sender) ERR_INSUFFICIENT_POINTS))
+            (recipient-data (default-to {total-points: u0, lifetime-earned: u0, current-streak: u0, last-earning-block: u0, tier-level: u0} 
+                            (map-get? taxpayer-points recipient)))
+            (transfer-id (var-get transfer-counter))
+        )
+        (asserts! (>= (get total-points sender-data) amount) ERR_INSUFFICIENT_POINTS)
+        (asserts! (> amount u0) ERR_INVALID_AMOUNT)
+        
+        ;; Update sender points
+        (map-set taxpayer-points
+            tx-sender
+            {
+                total-points: (- (get total-points sender-data) amount),
+                lifetime-earned: (get lifetime-earned sender-data),
+                current-streak: (get current-streak sender-data),
+                last-earning-block: (get last-earning-block sender-data),
+                tier-level: (calculate-tier-level (- (get total-points sender-data) amount))
+            }
+        )
+        
+        ;; Update recipient points
+        (map-set taxpayer-points
+            recipient
+            {
+                total-points: (+ (get total-points recipient-data) amount),
+                lifetime-earned: (get lifetime-earned recipient-data),
+                current-streak: (get current-streak recipient-data),
+                last-earning-block: (get last-earning-block recipient-data),
+                tier-level: (calculate-tier-level (+ (get total-points recipient-data) amount))
+            }
+        )
+        
+        ;; Record transfer
+        (map-set point-transfers
+            transfer-id
+            {
+                from: tx-sender,
+                to: recipient,
+                amount: amount,
+                transferred-at: stacks-block-height,
+                reason: reason
+            }
+        )
+        (var-set transfer-counter (+ transfer-id u1))
+        (ok transfer-id))
+)
+
+;; Award achievement points
+(define-public (award-achievement (user principal) (achievement-name (string-ascii 64)) (points uint))
+    (let
+        (
+            (achievement-id (var-get achievement-counter))
+            (user-data (default-to {total-points: u0, lifetime-earned: u0, current-streak: u0, last-earning-block: u0, tier-level: u0} 
+                       (map-get? taxpayer-points user)))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        
+        ;; Record achievement
+        (map-set taxpayer-achievements
+            { user: user, achievement-id: achievement-id }
+            {
+                earned-at: stacks-block-height,
+                points-awarded: points,
+                achievement-name: achievement-name
+            }
+        )
+        
+        ;; Update user points
+        (map-set taxpayer-points
+            user
+            {
+                total-points: (+ (get total-points user-data) points),
+                lifetime-earned: (+ (get lifetime-earned user-data) points),
+                current-streak: (get current-streak user-data),
+                last-earning-block: stacks-block-height,
+                tier-level: (calculate-tier-level (+ (get total-points user-data) points))
+            }
+        )
+        (var-set achievement-counter (+ achievement-id u1))
+        (ok achievement-id))
+)
+
+;; Create seasonal bonus periods
+(define-public (create-seasonal-bonus (season-name (string-ascii 32)) (multiplier uint) (duration-blocks uint))
+    (let
+        (
+            (season-id (var-get season-counter))
+            (start-block stacks-block-height)
+            (end-block (+ start-block duration-blocks))
+        )
+        (asserts! (is-eq tx-sender (var-get government-address)) ERR_UNAUTHORIZED)
+        (map-set seasonal-bonuses
+            season-id
+            {
+                season-name: season-name,
+                multiplier: multiplier,
+                start-block: start-block,
+                end-block: end-block,
+                active: true
+            }
+        )
+        (var-set season-counter (+ season-id u1))
+        (ok season-id))
+)
+
+;; Read-only functions for rewards system
+(define-read-only (get-user-points (user principal))
+    (map-get? taxpayer-points user)
+)
+
+(define-read-only (get-user-tier-info (user principal))
+    (let
+        (
+            (user-data (map-get? taxpayer-points user))
+        )
+        (if (is-some user-data)
+            (let
+                (
+                    (tier-level (get tier-level (unwrap-panic user-data)))
+                    (tier-info (map-get? reward-tiers tier-level))
+                )
+                (ok { user-tier: tier-level, tier-benefits: tier-info }))
+            ERR_INSUFFICIENT_POINTS))
+)
+
+(define-read-only (get-available-reward (reward-id uint))
+    (map-get? available-rewards reward-id)
+)
+
+(define-read-only (get-user-redemption (user principal) (reward-id uint))
+    (map-get? user-reward-redemptions { user: user, reward-id: reward-id })
+)
+
+(define-read-only (get-point-transfer (transfer-id uint))
+    (map-get? point-transfers transfer-id)
+)
+
+(define-read-only (calculate-tax-discount (user principal))
+    (let
+        (
+            (user-data (map-get? taxpayer-points user))
+        )
+        (if (is-some user-data)
+            (let
+                (
+                    (tier-level (get tier-level (unwrap-panic user-data)))
+                    (tier-info (map-get? reward-tiers tier-level))
+                )
+                (if (is-some tier-info)
+                    (ok (get discount-percentage (unwrap-panic tier-info)))
+                    (ok u0)))
+            (ok u0)))
+)
+
+(define-read-only (get-rewards-summary)
+    (ok {
+        total-rewards-created: (var-get rewards-counter),
+        total-point-transfers: (var-get transfer-counter),
+        total-achievements: (var-get achievement-counter),
+        active-seasons: (var-get season-counter),
+        points-to-stx-rate: (var-get points-to-stx-rate)
+    })
+)
+
+
