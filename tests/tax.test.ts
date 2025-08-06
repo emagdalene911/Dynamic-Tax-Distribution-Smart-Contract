@@ -1,0 +1,45 @@
+// TESTS +
+
+import { describe, expect, it } from "vitest";
+import { Cl } from "@stacks/transactions";
+
+const accounts = simnet.getAccounts();
+const government = accounts.get("wallet_1")!;
+const taxpayer = accounts.get("wallet_2")!;
+
+describe("tax contract", () => {
+  it("allows taxpayers to pay tax", () => {
+    const payTaxCall = simnet.callPublicFn("tax", "pay-tax", [], taxpayer);
+    // Verify the call succeeded and returned a uint value
+    expect(payTaxCall.result).toBeOk(Cl.bool(true));
+});
+
+
+it("Does not allows government to allocate funds after tax collection with incomplet information", () => {
+  // First collect some tax
+  const payTaxCall = simnet.callPublicFn("tax", "pay-tax", [], taxpayer);
+  expect(payTaxCall.result).toBeOk(Cl.bool(true));
+  
+  // Then allocate funds
+  const department = "EDUCATION";
+  const amount = 1000;
+  
+  const allocateCall = simnet.callPublicFn(
+      "tax", 
+      "allocate-funds",
+      [Cl.stringAscii(department), Cl.uint(amount)],
+      government
+  );
+  expect(allocateCall.result).toBeErr(Cl.uint(100)); 
+});
+
+    it("tracks treasury balance", () => {
+        const balanceCall = simnet.callReadOnlyFn(
+            "tax",
+            "get-treasury-balance",
+            [],
+            government
+        );
+        expect(balanceCall.result).toBeDefined();
+    });
+});
